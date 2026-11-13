@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Home Intercom</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #0f1218; color: #f2f4f8;
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; overflow: hidden; }
+  .screen { position: fixed; inset: 0; display: none; flex-direction: column; padding: 24px; }
+  .screen.show { display: flex; }
+
+  /* Header */
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  header h1 { margin: 0; font-size: 26px; font-weight: 700; }
+  header .me { font-size: 15px; color: #9aa3b5; margin-top: 4px; }
+  .gear { background: #1c212b; border: 0; color: #9aa3b5; font-size: 22px; width: 48px; height: 48px; border-radius: 14px; }
+  .status { font-size: 13px; color: #9aa3b5; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; display: inline-block; }
+  .dot.on { background: #34d399; } .dot.wait { background: #fbbf24; } .dot.off { background: #ef4444; }
+
+  /* Talk buttons */
+  .grid { flex: 1; display: grid; gap: 16px; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; }
+  .talk { position: relative; border: 0; border-radius: 26px; background: #1c212b; color: #f2f4f8;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    font-size: 24px; font-weight: 600; transition: transform .08s, background .15s; }
+  .talk .emoji { font-size: 56px; }
+  .talk .sub { font-size: 14px; color: #9aa3b5; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .talk.everyone { background: #23304a; }
+  .talk.active { background: #2563eb; transform: scale(.97); }
+  .talk.active .sub { color: #dbe6ff; }
+  .talk.disabled { opacity: .45; }
+  .hint { text-align: center; color: #6b7385; font-size: 14px; margin-top: 14px; }
+
+  /* Incoming banner */
+  .incoming { position: fixed; left: 24px; right: 24px; top: 24px; padding: 22px; border-radius: 22px;
+    background: #16a34a; color: white; font-size: 26px; font-weight: 700; text-align: center;
+    display: none; box-shadow: 0 10px 30px rgba(0,0,0,.4); z-index: 5; }
+  .incoming.show { display: block; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .8; } }
+
+  /* Start + setup */
+  .center { align-items: center; justify-content: center; text-align: center; }
+  .bigbtn { background: #2563eb; color: white; border: 0; border-radius: 22px; font-size: 26px; font-weight: 700;
+    padding: 28px 48px; margin-top: 24px; }
+  .card { width: 100%; max-width: 520px; margin: auto; background: #171b23; padding: 26px; border-radius: 24px; overflow-y: auto; }
+  .card h2 { margin: 0 0 6px; }
+  .card p { color: #9aa3b5; margin: 0 0 18px; font-size: 15px; line-height: 1.4; }
+  label { display: block; font-size: 14px; color: #9aa3b5; margin: 14px 0 6px; }
+  input { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid #2a3140; background: #0f1218; color: #fff;
+    font-size: 16px; -webkit-user-select: text; user-select: text; }
+  .rooms { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .roompick { padding: 16px 6px; border-radius: 14px; border: 2px solid #2a3140; background: #0f1218; color: #fff; font-size: 15px; }
+  .roompick.sel { border-color: #2563eb; background: #1a2744; }
+  .roompick .e { font-size: 30px; display: block; margin-bottom: 4px; }
+  .save { width: 100%; margin-top: 22px; background: #2563eb; color: #fff; border: 0; padding: 16px; border-radius: 14px; font-size: 18px; font-weight: 700; }
+  .err { color: #f87171; margin-top: 12px; font-size: 15px; min-height: 18px; }
+</style>
+</head>
+<body>
+
+<!-- SETUP SCREEN -->
+<div class="screen" id="setupScreen">
+  <div class="card">
+    <h2>Intercom setup</h2>
+    <p>Do this once on each iPad. Pick a different room for each one.</p>
+    <label>Which room is this iPad in?</label>
+    <div class="rooms" id="roomPicker"></div>
+    <button class="save" id="saveBtn">Save</button>
+    <div class="err" id="setupErr"></div>
+  </div>
+</div>
+
+<!-- START SCREEN (needed so iPad allows mic + sound) -->
+<div class="screen center" id="startScreen">
+  <div style="font-size:72px">📢</div>
+  <h1 style="margin:10px 0 0">Home Intercom</h1>
+  <div class="me" id="startRoom" style="color:#9aa3b5;margin-top:6px"></div>
+  <button class="bigbtn" id="startBtn">Tap to start</button>
+  <div class="err" id="startErr" style="max-width:520px"></div>
+</div>
+
+<!-- MAIN SCREEN -->
+<div class="screen" id="mainScreen">
+  <header>
+    <div>
+      <h1 id="meTitle">Intercom</h1>
+      <div class="status"><span class="dot wait" id="netDot"></span><span id="netText">Connecting…</span></div>
+    </div>
+    <button class="gear" id="gearBtn" title="Settings (hold)">⚙️</button>
+  </header>
+  <div class="grid" id="grid"></div>
+  <div class="hint">Hold a button. Wait for the beep, then talk. Let go to stop.</div>
+</div>
+
+<div class="incoming" id="incoming"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var ROOMS = [
+    { id: "downstairs", name: "Downstairs",   emoji: "🏠", say: "Message from downstairs" },
+    { id: "adam",       name: "Adam's Room",  emoji: "🎮", say: "Message from Adam" },
+    { id: "noam",       name: "Noam's Room",  emoji: "⚽", say: "Message from Noam" }
+  ];
+  var SUPABASE_URL = "https://kughalejiydqtseuyrni.supabase.co";
+  var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1Z2hhbGVqaXlkcXRzZXV5cm5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2MzY1NTAsImV4cCI6MjA5NjIxMjU1MH0.Eti8hM2qhHJnhaDmzVR0I2K7zOEiK8H2KEBJeWJiLE8";
+  var CHANNEL_NAME = "home-intercom";
+  var MAX_TALK_MS = 60000;
+  var ANNOUNCE_MS = 2200; // time the other iPad needs to chime + say "Message from …" before your voice goes through
+
+  // ---------- storage ----------
+  function loadCfg() {
+    try { return JSON.parse(localStorage.getItem("intercom-config") || "null"); } catch (e) { return null; }
+  }
+  function saveCfg(c) {
+    try { localStorage.setItem("intercom-config", JSON.stringify(c)); return true; } catch (e) { return false; }
+  }
+  function roomById(id) { for (var i = 0; i < ROOMS.length; i++) if (ROOMS[i].id === id) return ROOMS[i]; return null; }
+  function $(id) { return document.getElementById(id); }
+  function show(id) {
+    var s = document.querySelectorAll(".screen");
+    for (var i = 0; i < s.length; i++) s[i].classList.remove("show");
+    $(id).classList.add("show");
+  }
+
+  var cfg = loadCfg();
+  if (cfg) { cfg.url = SUPABASE_URL; cfg.key = SUPABASE_ANON_KEY; }
+  var myId = null, sb = null, channel = null, localStream = null, audioCtx = null;
+  var peers = {};         // peerId -> { pc, track, room, audio, pendingIce, initiator }
+  var talkTimer = null, talking = null, enableTimer = null;
+  var incomingFrom = {};  // peerId -> room name currently talking to me
+  var wakeLock = null;
+
+  // ---------- SETUP ----------
+  var pickedRoom = cfg ? cfg.room : null;
+  function renderPicker() {
+    var box = $("roomPicker"); box.innerHTML = "";
+    ROOMS.forEach(function (r) {
+      var b = document.createElement("button");
+      b.className = "roompick" + (pickedRoom === r.id ? " sel" : "");
+      b.innerHTML = '<span class="e">' + r.emoji + "</span>" + r.name;
+      b.onclick = function () { pickedRoom = r.id; renderPicker(); };
+      box.appendChild(b);
+    });
+  }
+  function openSetup() {
+    pickedRoom = cfg ? cfg.room : null;
+    renderPicker();
+    show("setupScreen");
+  }
+  $("saveBtn").onclick = function () {
+    if (!pickedRoom) { $("setupErr").textContent = "Pick which room this iPad is in."; return; }
+    cfg = { url: SUPABASE_URL, key: SUPABASE_ANON_KEY, room: pickedRoom };
+    if (!saveCfg(cfg)) { $("setupErr").textContent = "Couldn't save settings (private browsing on?)."; return; }
+    location.reload();
+  };
+
+  // ---------- START ----------
+  function goStart() {
+    var r = roomById(cfg.room);
+    $("startRoom").textContent = "This iPad: " + (r ? r.emoji + " " + r.name : cfg.room);
+    show("startScreen");
+  }
+
+  $("startBtn").onclick = function () {
+    $("startErr").textContent = "";
+    // Unlock audio playback (iPad needs a tap first)
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+      var b = audioCtx.createBuffer(1, 1, 22050), s = audioCtx.createBufferSource();
+      s.buffer = b; s.connect(audioCtx.destination); s.start(0);
+    } catch (e) {}
+    // Unlock the spoken announcements too (iPad needs a tap first)
+    try {
+      if (window.speechSynthesis && window.SpeechSynthesisUtterance) {
+        var u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        window.speechSynthesis.speak(u);
+      }
+    } catch (e) {}
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $("startErr").textContent = "This iPad's browser can't use the microphone here. It needs iOS 11 or newer and the page must be opened over https (e.g. GitHub Pages). On older iOS, open it in Safari, not from the home screen.";
+      return;
+    }
+    if (!window.RTCPeerConnection) {
+      $("startErr").textContent = "This iPad's browser doesn't support live audio (WebRTC). It needs iOS 11 or newer.";
+      return;
+    }
+    if (!window.supabase || !window.supabase.createClient) {
+      $("startErr").textContent = "Couldn't load Supabase. Check the Wi-Fi, then reload. (If Wi-Fi is fine, this iPad's iOS may be too old for the Supabase library.)";
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      .then(function (stream) {
+        localStream = stream;
+        stream.getAudioTracks()[0].enabled = false;
+        startMain();
+      })
+      .catch(function (err) {
+        $("startErr").textContent = "Microphone blocked: " + (err && err.name ? err.name : err) +
+          ". Allow the mic in Settings → Safari → Microphone, then reload.";
+      });
+  };
+
+  // ---------- MAIN ----------
+  function startMain() {
+    var r = roomById(cfg.room);
+    $("meTitle").textContent = (r ? r.emoji + " " + r.name : "Intercom");
+    renderGrid();
+    show("mainScreen");
+    requestWake();
+    myId = cfg.room + "-" + Math.random().toString(36).slice(2, 10);
+    sb = window.supabase.createClient(cfg.url, cfg.key);
+    connectChannel();
+  }
+
+  function renderGrid() {
+    var grid = $("grid"); grid.innerHTML = "";
+    var others = ROOMS.filter(function (r) { return r.id !== cfg.room; });
+    others.forEach(function (r) { grid.appendChild(makeTalkBtn(r.id, r.emoji, r.name)); });
+    var all = makeTalkBtn("__all", "📣", "Everyone");
+    all.classList.add("everyone");
+    if (others.length % 2 === 0) all.style.gridColumn = "1 / -1";
+    grid.appendChild(all);
+    updateStatus();
+  }
+
+  function makeTalkBtn(target, emoji, label) {
+    var b = document.createElement("button");
+    b.className = "talk";
+    b.setAttribute("data-target", target);
+    b.innerHTML = '<span class="emoji">' + emoji + '</span><span>' + label +
+      '</span><span class="sub"><span class="dot"></span><span class="st">Offline</span></span>';
+    var down = function (e) { if (e) e.preventDefault(); startTalk(target, b); };
+    var up = function (e) { if (e) e.preventDefault(); stopTalk(); };
+    b.addEventListener("touchstart", down, { passive: false });
+    b.addEventListener("touchend", up, { passive: false });
+    b.addEventListener("touchcancel", up, { passive: false });
+    b.addEventListener("mousedown", down);
+    b.addEventListener("mouseup", up);
+    b.addEventListener("mouseleave", function () { if (talking && talking.btn === b) stopTalk(); });
+    b.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+    return b;
+  }
+
+  function peerConnected(p) {
+    var s = p.pc.iceConnectionState;
+    return s === "connected" || s === "completed";
+  }
+
+  function targetsFor(target) {
+    var ids = [];
+    Object.keys(peers).forEach(function (id) {
+      var p = peers[id];
+      if ((target === "__all" || p.room === target) && peerConnected(p)) ids.push(id);
+    });
+    return ids;
+  }
+
+  function updateStatus() {
+    var btns = document.querySelectorAll(".talk");
+    for (var i = 0; i < btns.length; i++) {
+      var b = btns[i], t = b.getAttribute("data-target");
+      var any = false, ok = false;
+      Object.keys(peers).forEach(function (id) {
+        var p = peers[id];
+        if (t === "__all" || p.room === t) { any = true; if (peerConnected(p)) ok = true; }
+      });
+      var dot = b.querySelector(".sub .dot"), st = b.querySelector(".st");
+      if (talking && talking.btn === b && !talking.ready) { st.textContent = "Wait…"; dot.className = "dot wait"; }
+      else if (talking && talking.btn === b) { st.textContent = "Talk now"; dot.className = "dot on"; }
+      else if (ok) { st.textContent = "Ready"; dot.className = "dot on"; }
+      else if (any) { st.textContent = "Connecting…"; dot.className = "dot wait"; }
+      else { st.textContent = "Offline"; dot.className = "dot off"; }
+      b.classList.toggle("disabled", !ok);
+    }
+  }
+
+  function setNet(state, text) {
+    $("netDot").className = "dot " + state;
+    $("netText").textContent = text;
+  }
+
+  // ---------- TALKING ----------
+  function startTalk(target, btn) {
+    if (talking) return;
+    var ids = targetsFor(target);
+    if (!ids.length) { flashBtn(btn); return; }
+    talking = { ids: ids, btn: btn, ready: false };
+    btn.classList.add("active");
+    updateStatus();
+    send("talk", { from: myId, fromRoom: cfg.room, to: ids, on: true });
+    // wait while the other iPad chimes and announces you, then open the mic
+    enableTimer = setTimeout(function () {
+      if (!talking) return;
+      talking.ready = true;
+      talking.ids.forEach(function (id) { if (peers[id]) peers[id].track.enabled = true; });
+      beep(880, 0.1); // "go ahead" beep for you
+      updateStatus();
+    }, ANNOUNCE_MS);
+    talkTimer = setTimeout(stopTalk, MAX_TALK_MS + ANNOUNCE_MS);
+  }
+
+  function stopTalk() {
+    if (!talking) return;
+    clearTimeout(enableTimer); clearTimeout(talkTimer);
+    talking.ids.forEach(function (id) { if (peers[id]) peers[id].track.enabled = false; });
+    send("talk", { from: myId, fromRoom: cfg.room, to: talking.ids, on: false });
+    talking.btn.classList.remove("active");
+    talking = null;
+    updateStatus();
+  }
+
+  function flashBtn(b) {
+    b.style.background = "#4b1d1d";
+    setTimeout(function () { b.style.background = ""; }, 300);
+  }
+
+  function onTalk(p) {
+    if (!p || !p.to || p.to.indexOf(myId) === -1) return;
+    var r = roomById(p.fromRoom);
+    var name = r ? r.emoji + " " + r.name : p.fromRoom;
+    if (p.on) { incomingFrom[p.from] = name; chime(); announce(r ? r.say : "New message"); }
+    else delete incomingFrom[p.from];
+    var names = Object.keys(incomingFrom).map(function (k) { return incomingFrom[k]; });
+    var box = $("incoming");
+    if (names.length) { box.textContent = "🔊 " + names.join(" & ") + " is talking"; box.classList.add("show"); }
+    else box.classList.remove("show");
+  }
+
+  // ---------- SOUNDS ----------
+  function beep(freq, dur, when) {
+    if (!audioCtx) return;
+    try {
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      var t = audioCtx.currentTime + (when || 0);
+      var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq; o.type = "sine";
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.4, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t); o.stop(t + dur + 0.02);
+    } catch (e) {}
+  }
+  function chime() { beep(660, 0.12, 0); beep(990, 0.18, 0.13); }
+
+  // Spoken "Message from …" using the iPad's built-in voice
+  function announce(text) {
+    setTimeout(function () {
+      try {
+        if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) { chime(); return; }
+        window.speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = "en-US"; u.rate = 1.05; u.volume = 1;
+        window.speechSynthesis.speak(u);
+      } catch (e) { chime(); }
+    }, 350);
+  }
+
+  // ---------- SIGNALING (Supabase Realtime) ----------
+  function send(event, payload) {
+    if (!channel) return;
+    try { channel.send({ type: "broadcast", event: event, payload: payload }); } catch (e) {}
+  }
+
+  var reconnectTimer = null;
+  function connectChannel() {
+    setNet("wait", "Connecting…");
+    channel = sb.channel(CHANNEL_NAME, {
+      config: { broadcast: { self: false }, presence: { key: myId } }
+    });
+    channel.on("presence", { event: "sync" }, onSync);
+    channel.on("broadcast", { event: "signal" }, function (m) { onSignal(m.payload); });
+    channel.on("broadcast", { event: "talk" }, function (m) { onTalk(m.payload); });
+    channel.subscribe(function (status) {
+      if (status === "SUBSCRIBED") {
+        setNet("on", "Online");
+        channel.track({ room: cfg.room, id: myId, at: Date.now() });
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        setNet("off", "Reconnecting…");
+        scheduleReconnect();
+      }
+    });
+  }
+
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      Object.keys(peers).forEach(closePeer);
+      try { sb.removeChannel(channel); } catch (e) {}
+      channel = null;
+      connectChannel();
+    }, 3000);
+  }
+
+  function onSync() {
+    var state = channel.presenceState();
+    var online = {};
+    Object.keys(state).forEach(function (key) {
+      if (key === myId) return;
+      var metas = state[key];
+      if (metas && metas.length) online[key] = metas[0].room;
+    });
+    // remove peers that left
+    Object.keys(peers).forEach(function (id) { if (!online[id]) closePeer(id); });
+    // add new peers
+    Object.keys(online).forEach(function (id) {
+      if (!peers[id]) {
+        var p = createPeer(id, online[id]);
+        if (p.initiator) makeOffer(id);
+      }
+    });
+    updateStatus();
+  }
+
+  function createPeer(id, room) {
+    var pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    var track = localStream.getAudioTracks()[0].clone();
+    track.enabled = false;
+    var stream = new MediaStream([track]);
+    pc.addTrack(track, stream);
+
+    var audio = document.createElement("audio");
+    audio.autoplay = true;
+    audio.setAttribute("playsinline", "");
+    document.body.appendChild(audio);
+
+    var p = { pc: pc, track: track, room: room, audio: audio, pendingIce: [], initiator: myId < id };
+    peers[id] = p;
+
+    pc.onicecandidate = function (e) {
+      if (e.candidate) {
+        var c = e.candidate.toJSON ? e.candidate.toJSON() :
+          { candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex };
+        send("signal", { from: myId, to: id, type: "ice", candidate: c });
+      }
+    };
+    pc.ontrack = function (e) {
+      audio.srcObject = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+      var pr = audio.play(); if (pr && pr.catch) pr.catch(function () {});
+    };
+    pc.oniceconnectionstatechange = function () {
+      updateStatus();
+      if (pc.iceConnectionState === "failed") {
+        if (peers[id] && peers[id].pc === pc) {
+          closePeer(id);
+          setTimeout(function () { if (channel) onSync(); }, 2000);
+        }
+      }
+    };
+    return p;
+  }
+
+  function closePeer(id) {
+    var p = peers[id]; if (!p) return;
+    try { p.pc.close(); } catch (e) {}
+    try { p.track.stop(); } catch (e) {}
+    try { p.audio.srcObject = null; p.audio.parentNode.removeChild(p.audio); } catch (e) {}
+    delete peers[id];
+    if (incomingFrom[id]) { delete incomingFrom[id]; onTalk({ to: [myId], from: id, on: false }); }
+    if (talking) {
+      talking.ids = talking.ids.filter(function (x) { return x !== id; });
+    }
+    updateStatus();
+  }
+
+  function makeOffer(id) {
+    var p = peers[id]; if (!p) return;
+    p.pc.createOffer({ offerToReceiveAudio: true })
+      .then(function (offer) { return p.pc.setLocalDescription(offer).then(function () { return offer; }); })
+      .then(function (offer) { send("signal", { from: myId, to: id, type: "offer", sdp: offer.sdp, room: cfg.room }); })
+      .catch(function (e) { console.log("offer error", e); });
+  }
+
+  function flushIce(p) {
+    var list = p.pendingIce; p.pendingIce = [];
+    list.forEach(function (c) { p.pc.addIceCandidate(c).catch(function () {}); });
+  }
+
+  function onSignal(m) {
+    if (!m || m.to !== myId) return;
+    var id = m.from;
+    if (m.type === "offer") {
+      // always start fresh on a new offer
+      var room = m.room || (peers[id] ? peers[id].room : "?");
+      if (peers[id]) closePeer(id);
+      var p = createPeer(id, room);
+      p.pc.setRemoteDescription({ type: "offer", sdp: m.sdp })
+        .then(function () { flushIce(p); return p.pc.createAnswer(); })
+        .then(function (ans) { return p.pc.setLocalDescription(ans).then(function () { return ans; }); })
+        .then(function (ans) { send("signal", { from: myId, to: id, type: "answer", sdp: ans.sdp }); })
+        .catch(function (e) { console.log("answer error", e); });
+    } else if (m.type === "answer") {
+      var pa = peers[id]; if (!pa) return;
+      pa.pc.setRemoteDescription({ type: "answer", sdp: m.sdp })
+        .then(function () { flushIce(pa); })
+        .catch(function (e) { console.log("set answer error", e); });
+    } else if (m.type === "ice") {
+      var pi = peers[id]; if (!pi) return;
+      if (pi.pc.remoteDescription && pi.pc.remoteDescription.type) {
+        pi.pc.addIceCandidate(m.candidate).catch(function () {});
+      } else {
+        pi.pendingIce.push(m.candidate);
+      }
+    }
+  }
+
+  // ---------- KEEP AWAKE / RECOVER ----------
+  function requestWake() {
+    try {
+      if ("wakeLock" in navigator) {
+        navigator.wakeLock.request("screen").then(function (w) { wakeLock = w; }).catch(function () {});
+      }
+    } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible" || !sb) return;
+    requestWake();
+    if (audioCtx && audioCtx.state === "suspended") { try { audioCtx.resume(); } catch (e) {} }
+    Object.keys(peers).forEach(function (id) {
+      var a = peers[id].audio; var pr = a.play(); if (pr && pr.catch) pr.catch(function () {});
+    });
+    if (!channel || channel.state !== "joined") scheduleReconnect();
+  });
+
+  // Settings: hold the gear for 2 seconds (so nobody changes it by accident)
+  var gearTimer = null;
+  function gearDown(e) { if (e) e.preventDefault(); gearTimer = setTimeout(function () {
+    if (talking) stopTalk();
+    Object.keys(peers).forEach(closePeer);
+    try { if (channel) sb.removeChannel(channel); } catch (x) {}
+    openSetup();
+  }, 2000); }
+  function gearUp() { clearTimeout(gearTimer); }
+  $("gearBtn").addEventListener("touchstart", gearDown, { passive: false });
+  $("gearBtn").addEventListener("touchend", gearUp);
+  $("gearBtn").addEventListener("mousedown", gearDown);
+  $("gearBtn").addEventListener("mouseup", gearUp);
+
+  // ---------- BOOT ----------
+  if (!cfg || !cfg.url || !cfg.key || !roomById(cfg.room)) openSetup();
+  else goStart();
+})();
+</script>
+</body>
+</html>
